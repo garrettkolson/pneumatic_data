@@ -1,12 +1,16 @@
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::Duration;
+use std::ops::Deref;
+use moka::sync::Cache;
 use pneumatic_core::data::*;
 use pneumatic_core::tokens::*;
 use pneumatic_core::encoding::*;
+use rocksdb::{DBWithThreadMode, MultiThreaded, Options};
+use serde::{Serialize, Deserialize};
 
 pub struct SafeDataProvider { }
 
-impl DataProvider for SafeDataProvider {}
+//impl DataProvider for SafeDataProvider {}
 
 impl SafeDataProvider {
     pub fn get_token(key: &Vec<u8>, partition_id: &str) -> Result<Arc<RwLock<Token>>, DataError> {
@@ -44,26 +48,29 @@ impl SafeDataProvider {
         Ok(())
     }
 
-    pub fn save_typed_data<T: serde::Serialize>(key: &Vec<u8>, data: &T, partition_id: &str) -> Result<(), DataError> {
-        let db = Self::get_db_factory().get_db(partition_id)?;
-        let Ok(serialized) = serialize_to_bytes_rmp(data)
-            else { return Err(DataError::SerializationError) };
+    pub fn save_typed_data<T: Serialize>(key: &Vec<u8>, data: &T, partition_id: &str) -> Result<(), DataError> {
+        // let db = Self::get_db_factory().get_db(partition_id)?;
+        // let Ok(serialized) = serialize_to_bytes_rmp(data)
+            // .map(|serialized| db.save_data(key, &serialized))
+            // .unwrap_or_else(|err| Err(DataError::FromStore(err.to_string())))?;
+            // .map(|serialized| Self::put_in_data_cache(key, Arc::new(RwLock::new(serialized))))
+            //else { return Err(DataError::SerializationError) };
 
-        let _ = db.save_data(key, &serialized)?;
-        Self::put_in_data_cache(key, Arc::new(RwLock::new(serialized)));
+        // let _ = db.save_data(key, &serialized)?;
+        // Self::put_in_data_cache(key, Arc::new(RwLock::new(serialized)));
         Ok(())
     }
 
-    pub fn save_locked_data<T: serde::Serialize>(key: &Vec<u8>, data: Arc<RwLock<T>>, partition_id: &str)
+    pub fn save_locked_data<T: Serialize>(key: &Vec<u8>, data: Arc<RwLock<T>>, partition_id: &str)
                                                  -> Result<(), DataError> {
-        let db = Self::get_db_factory().get_db(partition_id)?;
-        let Ok(write_data) = data.write()
-            else { return Err(DataError::Poisoned) };
-        let Ok(serialized) = serialize_to_bytes_rmp(write_data.deref())
-            else { return Err(DataError::SerializationError) };
-
-        let _ = db.save_data(key, &serialized)?;
-        Self::put_in_data_cache(key, Arc::new(RwLock::new(serialized)));
+        // let db = Self::get_db_factory().get_db(partition_id)?;
+        // let Ok(write_data) = data.write()
+        //     else { return Err(DataError::Poisoned) };
+        // let Ok(serialized) = serialize_to_bytes_rmp(write_data.deref())
+        //     else { return Err(DataError::SerializationError) };
+        //
+        // let _ = db.save_data(key, &serialized)?;
+        // Self::put_in_data_cache(key, Arc::new(RwLock::new(serialized)));
         Ok(())
     }
 
@@ -171,7 +178,7 @@ impl Db for RocksDb {
             Ok(None) => Err(DataError::DataNotFound),
             Ok(Some(data)) => {
                 match deserialize_rmp_to::<Token>(&data) {
-                    Err(_) => Err(DataError::DeserializationError),
+                    Err(err) => Err(DataError::DeserializationError(err)),
                     Ok(token) => Ok(token)
                 }
             }
@@ -182,10 +189,10 @@ impl Db for RocksDb {
         let Ok(token) = token_ref.write()
             else { return Err(DataError::Poisoned) };
 
-        let Ok(data) = serialize_to_bytes_rmp(token.deref())
-            else { return Err(DataError::SerializationError) };
-
-        self.save_data(key, &data)
+        match serialize_to_bytes_rmp(token.deref()) {
+            Ok(data) => self.save_data(key, &data),
+            Err(err) => Err(DataError::SerializationError(err))
+        }
     }
 
     fn get_data(&self, key: &Vec<u8>) -> Result<Vec<u8>, DataError> {
